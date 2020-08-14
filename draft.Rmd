@@ -1,0 +1,141 @@
+---
+title: "Untitled"
+author: "MTBR - ModelThinkingBR"
+date: "5/27/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidymodels)
+```
+
+# Import
+
+Data description
+
+Objective: Prever se um determinado tweet é sobre um desastre real (1) ou não (0). 
+
+Columns
+
+* id: a unique identifier for each tweet
+* text: the text of the tweet
+* location: the location the tweet was sent from (may be blank)
+* keyword: a particular keyword from the tweet (may be blank)
+* target: in train.csv only, this denotes whether a tweet is about a real disaster (1) or not (0)
+
+```{r}
+#' Clean Tweets
+#'
+#' fucntion to clean general text from twitter
+#'
+#' @param x string
+#' @return cleaned string
+#' @example
+#' clean_text("HavE a niCe DAy!!! :)$$$")
+clean_text <- function(x) {
+  require(dplyr)
+  require(stringr)
+  
+  x %>%
+    str_remove_all("(RT|via)((?:\\b\\W*@\\w+)+)") %>%
+    str_to_lower() %>%
+    str_remove_all("@\\w+") %>%
+    str_remove_all("[[:digit:]]") %>%
+    str_remove_all("http(s|).*") %>%
+    str_remove_all("[ |\t]{2,}") %>%
+    str_remove_all("w( |)/") %>%
+    str_remove_all("(?! )[^[:alnum:]]") %>%
+    str_remove_all("'\\b\\w{1,2}\\b'") %>%
+    str_trim() %>%
+    str_squish()
+}
+
+library("textrecipes")
+
+train <- read_csv("train.csv") %>% mutate(target = ifelse(target == 1, "yes", "no"))
+test <- read_csv("test.csv")
+
+train %>% slice(1000:1010)
+
+nrow(train)
+train %>% 
+  filter(!is.na(location)) %>% 
+  mutate(city_state = qdapRegex::ex_city_state(location),
+         city_state = as.character(city_state),
+         city_state_zip = qdapRegex::ex_city_state_zip(location),
+         city_state_zip = as.character(city_state_zip)) %>% 
+  select(location, starts_with("city"))%>% 
+  count(city_state, sort = T) %>% mutate(prop = n / sum(n))
+  
+train %>% count(keyword, sort = T) 
+
+# library("spacyr")
+# spacy_install(prompt = F)
+
+
+disaster_recipe <- recipe(train, formula = target ~.) %>% 
+  step_rm(id, location, keyword) %>% 
+  # step_mutate(keyword = ifelse(is.na(keyword), "other", keyword)) %>% 
+  # step_mutate(location = ifelse(is.na(location), "none", location)) %>% 
+  step_mutate(text = clean_text(text)) %>% 
+  step_tokenize(text, token = "words")  %>%
+  # step_tokenize(text, token = "words", engine = "spacyr")  %>%
+  # step_lemma(text) %>%
+  # step_pos_filter(text) %>% 
+  step_stopwords(text) %>%
+  # step_untokenize(text) %>% 
+  # step_tokenize(text, token = "ngrams") %>% 
+  step_tokenfilter(text, min_times = 2, max_times = 200) %>% 
+  step_tfidf(text)
+# prep(disaster_recipe) %>% juice()
+  
+set.seed(123)
+disaster_vfold <- vfold_cv(train, v = 5, strata = target)
+
+disaster_rf_model <- rand_forest(mtry = tune(), min_n = tune(), trees = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("ranger", num.threads = 4)
+
+disaster_workflow <- workflow() %>% add_recipe(disaster_recipe)
+
+disaster_rf_workflow <-disaster_workflow %>% add_model(disaster_rf_model)
+
+rf_params <- parameters(
+  trees(),
+   min_n(), 
+   finalize(mtry(), train)
+)
+
+workflow_disaster_rf_model <- 
+  workflow() %>% 
+  add_model(disaster_rf_model) %>% 
+  add_recipe(disaster_recipe)
+
+set.seed(321)
+rf_tune <-
+  workflow_disaster_rf_model %>%
+  tune_bayes(
+    resamples = disaster_vfold,
+    param_info = rf_params,
+    # initial = ?,
+    iter = 50, 
+    metrics = metric_set(f_meas, roc_auc),
+    control = control_bayes(no_improve = 30, 
+                            save_pred = T, verbose = T)
+  )
+
+autoplot(rf_tune)
+
+```
+
+
+
+# Tidy
+
+# Transform
+
+# Model
+
+# Conclusion
